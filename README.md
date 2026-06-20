@@ -29,6 +29,9 @@ Dann `.env` ausfuellen:
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_USER_ID=...
 OPENROUTER_API_KEY=...
+OPENROUTER_TEXT_MODEL=deepseek/deepseek-v4-flash
+OPENROUTER_REASONING_MODEL=z-ai/glm-5.2
+OPENROUTER_VISION_MODEL=minimax/minimax-m3
 ```
 
 Keine echten Secrets committen. `.env` ist in `.gitignore` ausgeschlossen.
@@ -106,12 +109,28 @@ Danach folgen:
 - Indizes fuer Datum, Tags und Assets
 - `embedding vector(1024)` als Platzhalter fuer spaetere bge-m3-Embeddings
 
+## OpenRouter models
+
+Current defaults:
+
+- Text/archive summaries: `deepseek/deepseek-v4-flash`
+  - Fast, low-cost MoE model with 1M context. Good default for Telegram text, links, captions and document metadata.
+- Long reasoning fallback: `z-ai/glm-5.2`
+  - Higher-cost reasoning model with 1M context. Keep this for later complex document parsing, project-level synthesis, or difficult multi-step extraction.
+- Photos, screenshots and video frames: `minimax/minimax-m3`
+  - Current open-weight multimodal model with text, image and video input support, 1M context, and a much lower price than frontier closed multimodal models.
+
+Optional experimental/free multimodal alternative:
+
+- `nvidia/nemotron-nano-12b-v2-vl:free`
+  - Open multimodal model focused on OCR, charts, document intelligence and video understanding. Useful for cost-free experiments, but keep `minimax/minimax-m3` as the default when reliability matters.
+
 ## Hinweise
 
 - OpenRouter-Modelle sind ueber `.env` konfigurierbar:
   - `OPENROUTER_TEXT_MODEL`
+  - `OPENROUTER_REASONING_MODEL`
   - `OPENROUTER_VISION_MODEL`
 - PDF-Inhalte werden aktuell nicht geparst. Sie werden als Asset gespeichert und mit Metadaten archiviert.
 - Videoanalyse basiert auf extrahierten JPG-Frames, nicht auf Tonspur-Transkription.
 - Bei Fehlern schreibt der Bot Details ins Container-Log und sendet dem erlaubten Telegram-User eine kurze Fehlermeldung.
-

@@ -64,12 +64,13 @@ def require_allowed(
 async def handle_text(message: Message) -> None:
     text = message.text or ""
     urls = extract_urls(text)
-    analysis = await llm.analyze_text(text, urls)
+    model = select_text_model(text)
+    analysis = await llm.analyze_text(text, urls, model=model)
     await persist_and_confirm(
         message=message,
         item_type="text",
         source="telegram",
-        model=settings.openrouter_text_model,
+        model=model,
         analysis=analysis,
         original_text=text,
         url=urls[0] if urls else None,
@@ -251,6 +252,12 @@ def escape_html(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def select_text_model(text: str) -> str:
+    if len(text) >= 12000:
+        return settings.openrouter_reasoning_model
+    return settings.openrouter_text_model
+
+
 async def main() -> None:
     await db.connect()
     bot = Bot(settings.telegram_bot_token)
@@ -267,4 +274,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

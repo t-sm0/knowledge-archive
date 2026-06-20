@@ -65,13 +65,16 @@ class OpenRouterClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def analyze_text(self, text: str, urls: list[str]) -> LLMAnalysis:
+    async def analyze_text(self, text: str, urls: list[str], model: str | None = None) -> LLMAnalysis:
         prompt = (
             "Analyze this Telegram text message for a personal knowledge archive.\n"
             f"Detected URLs: {urls}\n\n"
             f"Message:\n{text}"
         )
-        return await self._chat_json(self.settings.openrouter_text_model, [{"type": "text", "text": prompt}])
+        return await self._chat_json(
+            model or self.settings.openrouter_text_model,
+            [{"type": "text", "text": prompt}],
+        )
 
     async def analyze_images(
         self,
@@ -148,4 +151,3 @@ def _image_data_url(path: Path) -> str:
     }.get(suffix, "image/jpeg")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
-
