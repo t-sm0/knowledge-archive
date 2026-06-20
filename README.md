@@ -2,16 +2,18 @@
 
 Docker-Compose-Projekt fuer einen privaten Telegram-Wissensarchiv-Bot.
 
-Der Bot nimmt Text, Links, Fotos, Screenshots, Dokumente und Videos per Telegram-Polling entgegen, speichert Originaldateien lokal unter `./data`, analysiert Inhalte ueber OpenRouter und schreibt pro Ingest eine OKF/Markdown-Datei sowie Metadaten nach Postgres mit pgvector.
+Der Bot ist ein privater Telegram-Assistent fuer dein Wissensarchiv. Plain-Text-Nachrichten werden als Chat/Fragen gegen die Knowledge Base behandelt. Mit `/archive` sowie durch Fotos, Screenshots, Dokumente, Videos und Instagram-Links werden Inhalte lokal unter `./data` gespeichert, ueber OpenRouter analysiert und als OKF/Markdown plus Metadaten nach Postgres/pgvector geschrieben.
 
 ## Features
 
 - Telegram Bot Polling mit `aiogram`
 - Zugriff nur fuer `TELEGRAM_ALLOWED_USER_ID`
-- Chat commands:
-  - `/ask <frage>` beantwortet Fragen mit Kontext aus archivierten Eintraegen
-  - `/chat <nachricht>` spricht mit dem Bot, ohne die Nachricht zu archivieren
-- Text-Ingest mit URL-Erkennung, LLM-Summary, Markdown und DB-Eintrag
+- Plain text = Assistant-Chat mit Kontext aus archivierten Eintraegen
+- Chat/Ingest commands:
+  - `/archive <text>` archiviert Text oder Links explizit
+  - `/ask <frage>` beantwortet Fragen explizit mit Kontext aus archivierten Eintraegen
+  - `/chat <nachricht>` ist ein Alias fuer Assistant-Chat
+- Text-Ingest per `/archive` mit URL-Erkennung, LLM-Summary, Markdown und DB-Eintrag
 - Foto/Screenshot-Ingest mit groesster Telegram-Foto-Version, lokaler Asset-Speicherung und Vision-Analyse
 - Instagram-Post/Reel-Links mit `yt-dlp`, optionalen Cookies, lokaler Medienablage und Vision-Analyse
 - Dokument-Ingest mit Asset-Speicherung; PDFs werden zunaechst als Asset plus Metadaten archiviert
@@ -167,14 +169,16 @@ INSTAGRAM_COOKIES_FILE=/app/data/secrets/instagram-cookies.txt
 
 ## Chat and archive Q&A
 
-Plain text messages are still treated as ingest requests. Use explicit commands when you want to talk to the bot:
+Plain text messages are treated as assistant chat over your archive. Use `/archive` when you want to save a text note or link:
 
 ```text
+Was habe ich zuletzt zu pgvector gespeichert?
+/archive https://example.com Ein Link, den ich spaeter zusammenfassen will.
 /ask Welche Links habe ich zu pgvector gespeichert?
 /chat Erklaere mir kurz, wie ich dieses Archiv nutzen sollte.
 ```
 
-`/ask` uses a simple lexical database search over title, summary, original text and tags, then asks the configured text model to answer from those matching archive items. Embedding search remains a TODO behind the existing embedding service boundary.
+Plain text and `/ask` use a simple lexical database search over title, summary, original text and tags, then ask the configured text model to answer from those matching archive items. Embedding search remains a TODO behind the existing embedding service boundary.
 
 ## Hinweise
 

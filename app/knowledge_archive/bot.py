@@ -74,10 +74,22 @@ def require_allowed(
 async def handle_help(message: Message) -> None:
     await message.answer(
         "Commands:\n"
-        "/ask <question> - answer using archived items\n"
-        "/chat <message> - talk without archiving\n\n"
-        "Plain text, links, photos, documents, videos and Instagram links are archived."
+        "/archive <text> - archive a text note or link\n"
+        "/ask <question> - explicit archive Q&A\n"
+        "/chat <message> - assistant chat alias\n\n"
+        "Plain text chats with the assistant using the archive as context. "
+        "Photos, documents, videos and Instagram links are archived automatically."
     )
+
+
+@router.message(Command("archive"))
+@require_allowed
+async def handle_archive(message: Message) -> None:
+    text = command_payload(message.text or "")
+    if not text:
+        await message.answer("Usage: /archive <text or link>")
+        return
+    await archive_text_message(message, text)
 
 
 @router.message(Command("ask"))
@@ -113,6 +125,11 @@ async def handle_text(message: Message) -> None:
         await handle_instagram_text(message, text, urls, instagram)
         return
 
+    await answer_with_archive_context(message, text)
+
+
+async def archive_text_message(message: Message, text: str) -> None:
+    urls = extract_urls(text)
     model = select_text_model(text)
     analysis = await llm.analyze_text(text, urls, model=model)
     await persist_and_confirm(
@@ -126,6 +143,12 @@ async def handle_text(message: Message) -> None:
         assets=[],
         metadata={"urls": urls, "telegram_message_id": message.message_id},
     )
+
+
+async def answer_with_archive_context(message: Message, question: str) -> None:
+    items = await db.search_items(question, limit=8)
+    answer = await llm.answer_archive_question(question, items)
+    await message.answer(truncate_telegram(answer))
 
 
 async def handle_instagram_text(
