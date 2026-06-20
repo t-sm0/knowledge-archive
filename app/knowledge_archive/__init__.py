@@ -1,0 +1,2 @@
+"""Knowledge Archive Telegram bot."""
+
