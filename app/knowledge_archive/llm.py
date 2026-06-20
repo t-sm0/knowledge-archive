@@ -108,6 +108,35 @@ class OpenRouterClient:
         )
         return await self._chat_json(self.settings.openrouter_text_model, [{"type": "text", "text": prompt}])
 
+    async def answer_archive_question(
+        self,
+        question: str,
+        context_items: list[dict[str, Any]],
+    ) -> str:
+        context = _format_archive_context(context_items)
+        prompt = (
+            "Answer the user's question using the archive context below. "
+            "If the archive does not contain enough evidence, say that clearly. "
+            "Use German unless the user writes in another language. Keep it concise.\n\n"
+            f"Archive context:\n{context}\n\n"
+            f"Question:\n{question}"
+        )
+        return await self._chat_text(
+            self.settings.openrouter_text_model,
+            [{"type": "text", "text": prompt}],
+        )
+
+    async def chat(self, text: str) -> str:
+        prompt = (
+            "You are the user's private knowledge archive assistant. "
+            "Be concise, practical and explicit. This message is chat, not an ingest request.\n\n"
+            f"User:\n{text}"
+        )
+        return await self._chat_text(
+            self.settings.openrouter_text_model,
+            [{"type": "text", "text": prompt}],
+        )
+
     async def _chat_json(self, model: str, content: list[dict[str, Any]]) -> LLMAnalysis:
         payload = {
             "model": model,
@@ -186,6 +215,30 @@ class OpenRouterClient:
             logger.exception("Invalid repaired LLM response")
             raise LLMError("OpenRouter JSON repair returned invalid analysis JSON") from exc
 
+    async def _chat_text(self, model: str, content: list[dict[str, Any]]) -> str:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a private archive assistant. Do not claim access beyond provided context.",
+                },
+                {"role": "user", "content": content},
+            ],
+        }
+        response = await self._client.post("/chat/completions", json=payload)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.warning("OpenRouter text request failed: %s", exc.response.text[:1000])
+            raise LLMError(f"OpenRouter returned HTTP {exc.response.status_code}") from exc
+        try:
+            content_value = response.json()["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as exc:
+            logger.exception("Invalid LLM text response")
+            raise LLMError("OpenRouter returned invalid text response") from exc
+        return str(content_value).strip()
+
 
 def _image_data_url(path: Path) -> str:
     suffix = path.suffix.lower()
@@ -225,3 +278,24 @@ def _stringify_raw(raw_content: Any) -> str:
     if isinstance(raw_content, str):
         return raw_content[:12000]
     return json.dumps(raw_content, ensure_ascii=False, default=str)[:12000]
+
+
+def _format_archive_context(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "No archive items matched the query."
+    chunks: list[str] = []
+    for index, item in enumerate(items, start=1):
+        chunks.append(
+            "\n".join(
+                [
+                    f"[{index}] {item.get('title') or 'Untitled'}",
+                    f"Type: {item.get('item_type')}",
+                    f"Created: {item.get('created_at')}",
+                    f"URL: {item.get('url') or '-'}",
+                    f"Tags: {', '.join(item.get('tags') or []) or '-'}",
+                    f"Summary: {item.get('summary') or '-'}",
+                    f"Original: {str(item.get('original_text') or '')[:1200] or '-'}",
+                ]
+            )
+        )
+    return "\n\n".join(chunks)[:16000]

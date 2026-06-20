@@ -12,6 +12,7 @@ from uuid import uuid4
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
+from aiogram.filters import Command
 from aiogram.types import Message
 
 from knowledge_archive.config import settings
@@ -35,6 +36,7 @@ storage = Storage(settings.data_dir)
 db = Database(settings.database_url)
 llm = OpenRouterClient(settings)
 embeddings = EmbeddingService()
+MAX_TELEGRAM_MESSAGE = 3900
 
 
 def allowed(message: Message) -> bool:
@@ -65,6 +67,40 @@ def require_allowed(
                 logger.exception("Could not send Telegram error response")
 
     return wrapped
+
+
+@router.message(Command("help"))
+@require_allowed
+async def handle_help(message: Message) -> None:
+    await message.answer(
+        "Commands:\n"
+        "/ask <question> - answer using archived items\n"
+        "/chat <message> - talk without archiving\n\n"
+        "Plain text, links, photos, documents, videos and Instagram links are archived."
+    )
+
+
+@router.message(Command("ask"))
+@require_allowed
+async def handle_ask(message: Message) -> None:
+    question = command_payload(message.text or "")
+    if not question:
+        await message.answer("Usage: /ask <question>")
+        return
+    items = await db.search_items(question, limit=8)
+    answer = await llm.answer_archive_question(question, items)
+    await message.answer(truncate_telegram(answer))
+
+
+@router.message(Command("chat"))
+@require_allowed
+async def handle_chat(message: Message) -> None:
+    text = command_payload(message.text or "")
+    if not text:
+        await message.answer("Usage: /chat <message>")
+        return
+    answer = await llm.chat(text)
+    await message.answer(truncate_telegram(answer))
 
 
 @router.message(F.text)
@@ -357,6 +393,17 @@ async def persist_and_confirm(
 
 def escape_html(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def command_payload(text: str) -> str:
+    parts = text.split(maxsplit=1)
+    return parts[1].strip() if len(parts) == 2 else ""
+
+
+def truncate_telegram(text: str) -> str:
+    if len(text) <= MAX_TELEGRAM_MESSAGE:
+        return text
+    return text[: MAX_TELEGRAM_MESSAGE - 20].rstrip() + "\n\n[truncated]"
 
 
 def build_instagram_prompt(text: str, downloads: list[Any]) -> str:

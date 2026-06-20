@@ -8,6 +8,9 @@ Der Bot nimmt Text, Links, Fotos, Screenshots, Dokumente und Videos per Telegram
 
 - Telegram Bot Polling mit `aiogram`
 - Zugriff nur fuer `TELEGRAM_ALLOWED_USER_ID`
+- Chat commands:
+  - `/ask <frage>` beantwortet Fragen mit Kontext aus archivierten Eintraegen
+  - `/chat <nachricht>` spricht mit dem Bot, ohne die Nachricht zu archivieren
 - Text-Ingest mit URL-Erkennung, LLM-Summary, Markdown und DB-Eintrag
 - Foto/Screenshot-Ingest mit groesster Telegram-Foto-Version, lokaler Asset-Speicherung und Vision-Analyse
 - Instagram-Post/Reel-Links mit `yt-dlp`, optionalen Cookies, lokaler Medienablage und Vision-Analyse
@@ -161,6 +164,17 @@ INSTAGRAM_COOKIES_FILE=/app/data/secrets/instagram-cookies.txt
 ```
 
 `./data` is git-ignored, so cookies are not committed.
+
+## Chat and archive Q&A
+
+Plain text messages are still treated as ingest requests. Use explicit commands when you want to talk to the bot:
+
+```text
+/ask Welche Links habe ich zu pgvector gespeichert?
+/chat Erklaere mir kurz, wie ich dieses Archiv nutzen sollte.
+```
+
+`/ask` uses a simple lexical database search over title, summary, original text and tags, then asks the configured text model to answer from those matching archive items. Embedding search remains a TODO behind the existing embedding service boundary.
 
 ## Hinweise
 

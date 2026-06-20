@@ -54,3 +54,37 @@ class Database:
                 embedding,
             )
 
+    async def search_items(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
+        if not self.pool:
+            raise RuntimeError("Database pool is not connected")
+        terms = [term for term in query.split() if len(term) >= 3][:8]
+        async with self.pool.acquire() as conn:
+            if not terms:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, item_type, created_at, title, summary, url, tags, assets,
+                           markdown_path, original_text, metadata
+                    FROM archive_items
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            else:
+                patterns = [f"%{term}%" for term in terms]
+                rows = await conn.fetch(
+                    """
+                    SELECT id, item_type, created_at, title, summary, url, tags, assets,
+                           markdown_path, original_text, metadata
+                    FROM archive_items
+                    WHERE title ILIKE ANY($1::text[])
+                       OR summary ILIKE ANY($1::text[])
+                       OR original_text ILIKE ANY($1::text[])
+                       OR array_to_string(tags, ' ') ILIKE ANY($1::text[])
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                    """,
+                    patterns,
+                    limit,
+                )
+        return [dict(row) for row in rows]
