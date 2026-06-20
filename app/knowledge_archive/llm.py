@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -132,13 +133,58 @@ class OpenRouterClient:
 
         try:
             raw_content = response.json()["choices"][0]["message"]["content"]
-            parsed = json.loads(raw_content)
-            analysis = LLMAnalysis.model_validate(parsed)
-            analysis.tags = normalize_tags(analysis.tags)
-            return analysis
-        except (KeyError, IndexError, json.JSONDecodeError, ValidationError) as exc:
+        except (KeyError, IndexError) as exc:
             logger.exception("Invalid LLM response")
             raise LLMError("OpenRouter returned invalid analysis JSON") from exc
+
+        try:
+            return _validate_analysis(raw_content)
+        except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+            if model == self.settings.openrouter_text_model:
+                logger.exception("Invalid LLM response from JSON repair model")
+                raise LLMError("OpenRouter returned invalid analysis JSON") from exc
+            logger.warning(
+                "Model %s returned non-conforming JSON; repairing with %s",
+                model,
+                self.settings.openrouter_text_model,
+            )
+            return await self._repair_json(raw_content, model)
+
+    async def _repair_json(self, raw_content: Any, source_model: str) -> LLMAnalysis:
+        repair_prompt = (
+            "Convert this model response into valid JSON matching the archive_analysis schema. "
+            "Preserve useful facts, OCR text, tags, open questions and uncertainty. "
+            "Do not add fields outside the schema.\n\n"
+            f"Source model: {source_model}\n"
+            f"Raw response:\n{_stringify_raw(raw_content)}"
+        )
+        payload = {
+            "model": self.settings.openrouter_text_model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": [{"type": "text", "text": repair_prompt}]},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "archive_analysis",
+                    "strict": True,
+                    "schema": ANALYSIS_SCHEMA,
+                },
+            },
+        }
+        response = await self._client.post("/chat/completions", json=payload)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.warning("OpenRouter JSON repair failed: %s", exc.response.text[:1000])
+            raise LLMError(f"OpenRouter JSON repair returned HTTP {exc.response.status_code}") from exc
+        try:
+            repaired_content = response.json()["choices"][0]["message"]["content"]
+            return _validate_analysis(repaired_content)
+        except (KeyError, IndexError, json.JSONDecodeError, TypeError, ValidationError) as exc:
+            logger.exception("Invalid repaired LLM response")
+            raise LLMError("OpenRouter JSON repair returned invalid analysis JSON") from exc
 
 
 def _image_data_url(path: Path) -> str:
@@ -151,3 +197,31 @@ def _image_data_url(path: Path) -> str:
     }.get(suffix, "image/jpeg")
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
+
+
+def _validate_analysis(raw_content: Any) -> LLMAnalysis:
+    parsed = _loads_model_json(raw_content)
+    if isinstance(parsed, dict):
+        if not str(parsed.get("title") or "").strip():
+            parsed["title"] = "Untitled archive item"
+        if not str(parsed.get("summary") or "").strip():
+            parsed["summary"] = "No summary provided."
+    analysis = LLMAnalysis.model_validate(parsed)
+    analysis.tags = normalize_tags(analysis.tags)
+    return analysis
+
+
+def _loads_model_json(raw_content: Any) -> Any:
+    if not isinstance(raw_content, str):
+        raise TypeError("LLM content is not a string")
+    text = raw_content.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    return json.loads(text)
+
+
+def _stringify_raw(raw_content: Any) -> str:
+    if isinstance(raw_content, str):
+        return raw_content[:12000]
+    return json.dumps(raw_content, ensure_ascii=False, default=str)[:12000]

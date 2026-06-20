@@ -125,6 +125,8 @@ Optional experimental/free multimodal alternative:
 - `nvidia/nemotron-nano-12b-v2-vl:free`
   - Open multimodal model focused on OCR, charts, document intelligence and video understanding. Useful for cost-free experiments, but keep `minimax/minimax-m3` as the default when reliability matters.
 
+The bot validates every LLM response against the archive JSON schema before writing files or database rows. If a primary model returns fenced JSON or the wrong shape, the client attempts one repair pass through `OPENROUTER_TEXT_MODEL` and validates the repaired output.
+
 ## Hinweise
 
 - OpenRouter-Modelle sind ueber `.env` konfigurierbar:
