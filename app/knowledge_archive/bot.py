@@ -19,6 +19,7 @@ from knowledge_archive.db import Database
 from knowledge_archive.embeddings import EmbeddingService
 from knowledge_archive.llm import OpenRouterClient
 from knowledge_archive.models import ArchiveItem, Asset
+from knowledge_archive.social import download_instagram_url, instagram_urls, read_info_json
 from knowledge_archive.storage import Storage
 from knowledge_archive.text import extract_urls
 from knowledge_archive.video import extract_frames
@@ -45,14 +46,21 @@ def require_allowed(
 ) -> Callable[[Message], Awaitable[None]]:
     async def wrapped(message: Message) -> None:
         if not allowed(message):
-            logger.warning("Rejected message from unauthorized user_id=%s", message.from_user.id if message.from_user else None)
+            user_id = message.from_user.id if message.from_user else None
+            logger.warning("Rejected message from unauthorized user_id=%s", user_id)
             return
         try:
             await handler(message)
-        except Exception:
+        except Exception as exc:
             logger.exception("Ingest failed")
             try:
-                await message.answer("Ingest fehlgeschlagen. Details stehen im Bot-Log.")
+                detail = str(exc).strip()
+                suffix = (
+                    f"\n\n{escape_html(detail)}"
+                    if detail
+                    else "\n\nDetails stehen im Bot-Log."
+                )
+                await message.answer(f"Ingest fehlgeschlagen.{suffix}", parse_mode=ParseMode.HTML)
             except TelegramAPIError:
                 logger.exception("Could not send Telegram error response")
 
@@ -64,6 +72,11 @@ def require_allowed(
 async def handle_text(message: Message) -> None:
     text = message.text or ""
     urls = extract_urls(text)
+    instagram = instagram_urls(urls)
+    if instagram:
+        await handle_instagram_text(message, text, urls, instagram)
+        return
+
     model = select_text_model(text)
     analysis = await llm.analyze_text(text, urls, model=model)
     await persist_and_confirm(
@@ -76,6 +89,95 @@ async def handle_text(message: Message) -> None:
         url=urls[0] if urls else None,
         assets=[],
         metadata={"urls": urls, "telegram_message_id": message.message_id},
+    )
+
+
+async def handle_instagram_text(
+    message: Message,
+    text: str,
+    urls: list[str],
+    instagram: list[str],
+) -> None:
+    archive_id = uuid4()
+    downloads = []
+    assets: list[Asset] = []
+    image_paths: list[Path] = []
+    frame_paths: list[Path] = []
+    metadata: dict[str, Any] = {
+        "urls": urls,
+        "instagram_urls": instagram,
+        "telegram_message_id": message.message_id,
+    }
+
+    for index, url in enumerate(instagram, start=1):
+        download_dir = storage.tmp_dir / "instagram" / str(archive_id) / str(index)
+        download = await download_instagram_url(url, download_dir, settings.instagram_cookies_file)
+        downloads.append(download)
+        if download.info_json:
+            info_asset = storage.copy_asset(
+                download.info_json,
+                archive_id,
+                f"instagram-{index}.info.json",
+                "application/json",
+                role="instagram_metadata",
+            )
+            assets.append(info_asset)
+            metadata[f"instagram_info_{index}"] = read_info_json(download.info_json)
+
+        for media in download.media:
+            asset = storage.copy_asset(
+                media.path,
+                archive_id,
+                media.path.name,
+                media.media_type,
+                role=media.role,
+            )
+            assets.append(asset)
+            asset_path = settings.data_dir / asset.path
+            if media.media_type and media.media_type.startswith("image/"):
+                image_paths.append(asset_path)
+            elif media.media_type and media.media_type.startswith("video/"):
+                frames_dir = storage.dated_asset_dir() / f"{archive_id}-instagram-{index}-frames"
+                extracted = await extract_frames(asset_path, frames_dir)
+                frame_paths.extend(extracted)
+                assets.extend(
+                    Asset(
+                        path=storage.relative(frame),
+                        media_type="image/jpeg",
+                        role="instagram_video_frame",
+                        metadata={"source_url": url, "index": frame_index},
+                    )
+                    for frame_index, frame in enumerate(extracted, start=1)
+                )
+
+    prompt_text = build_instagram_prompt(text, downloads)
+    visual_paths = [*image_paths, *frame_paths[:20]]
+    if visual_paths:
+        analysis = await llm.analyze_images(
+            visual_paths,
+            prompt_text,
+            text,
+        )
+        model = settings.openrouter_vision_model
+    else:
+        analysis = await llm.analyze_text(
+            prompt_text,
+            instagram,
+            model=settings.openrouter_text_model,
+        )
+        model = settings.openrouter_text_model
+
+    await persist_and_confirm(
+        message=message,
+        item_type="instagram",
+        source="telegram/instagram",
+        model=model,
+        analysis=analysis,
+        original_text=text,
+        url=instagram[0],
+        assets=assets,
+        metadata=metadata,
+        archive_id=archive_id,
     )
 
 
@@ -167,7 +269,12 @@ async def handle_video(message: Message) -> None:
     frames_dir = storage.dated_asset_dir() / f"{archive_id}-frames"
     frame_paths = await extract_frames(settings.data_dir / original_asset.path, frames_dir)
     frame_assets = [
-        Asset(path=storage.relative(path), media_type="image/jpeg", role="video_frame", metadata={"index": index})
+        Asset(
+            path=storage.relative(path),
+            media_type="image/jpeg",
+            role="video_frame",
+            metadata={"index": index},
+        )
         for index, path in enumerate(frame_paths, start=1)
     ]
     analysis = await llm.analyze_images(
@@ -250,6 +357,27 @@ async def persist_and_confirm(
 
 def escape_html(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def build_instagram_prompt(text: str, downloads: list[Any]) -> str:
+    lines = [
+        "Analyze this Instagram post/reel shared to a personal knowledge archive.",
+        "Use the downloaded media, captions and metadata. Extract OCR if visible.",
+        f"Telegram message:\n{text}",
+        "",
+        "Instagram downloads:",
+    ]
+    for download in downloads:
+        lines.extend(
+            [
+                f"- URL: {download.webpage_url or download.url}",
+                f"  Title: {download.title or '-'}",
+                f"  Uploader: {download.uploader or '-'}",
+                f"  Caption/description: {download.description or '-'}",
+                f"  Media files: {len(download.media)}",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def select_text_model(text: str) -> str:

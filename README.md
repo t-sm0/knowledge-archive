@@ -10,6 +10,7 @@ Der Bot nimmt Text, Links, Fotos, Screenshots, Dokumente und Videos per Telegram
 - Zugriff nur fuer `TELEGRAM_ALLOWED_USER_ID`
 - Text-Ingest mit URL-Erkennung, LLM-Summary, Markdown und DB-Eintrag
 - Foto/Screenshot-Ingest mit groesster Telegram-Foto-Version, lokaler Asset-Speicherung und Vision-Analyse
+- Instagram-Post/Reel-Links mit `yt-dlp`, optionalen Cookies, lokaler Medienablage und Vision-Analyse
 - Dokument-Ingest mit Asset-Speicherung; PDFs werden zunaechst als Asset plus Metadaten archiviert
 - Video-Ingest mit `ffmpeg` Frame-Extraktion alle 3 Sekunden, maximal 20 Frames, plus Vision-Analyse
 - Validierte JSON-Ausgabe per Pydantic
@@ -32,6 +33,7 @@ OPENROUTER_API_KEY=...
 OPENROUTER_TEXT_MODEL=deepseek/deepseek-v4-flash
 OPENROUTER_REASONING_MODEL=z-ai/glm-5.2
 OPENROUTER_VISION_MODEL=minimax/minimax-m3
+INSTAGRAM_COOKIES_FILE=/app/data/secrets/instagram-cookies.txt
 ```
 
 Keine echten Secrets committen. `.env` ist in `.gitignore` ausgeschlossen.
@@ -74,6 +76,7 @@ Lokale Daten liegen unter `./data`:
 data/
   assets/YYYY/MM/DD/
   notes/YYYY/MM/DD/
+  secrets/
   tmp/
 ```
 
@@ -126,6 +129,38 @@ Optional experimental/free multimodal alternative:
   - Open multimodal model focused on OCR, charts, document intelligence and video understanding. Useful for cost-free experiments, but keep `minimax/minimax-m3` as the default when reliability matters.
 
 The bot validates every LLM response against the archive JSON schema before writing files or database rows. If a primary model returns fenced JSON or the wrong shape, the client attempts one repair pass through `OPENROUTER_TEXT_MODEL` and validates the repaired output.
+
+## Instagram links
+
+The bot detects Instagram post/reel URLs in text messages, downloads media with `yt-dlp`, stores the original downloaded files under `./data/assets/YYYY/MM/DD/`, extracts frames from downloaded videos, then sends downloaded images/video frames plus captions and metadata to the vision model.
+
+Supported URL shapes include:
+
+- `https://www.instagram.com/p/...`
+- `https://www.instagram.com/reel/...`
+- `https://www.instagram.com/tv/...`
+
+Login is optional but often needed. Public posts can sometimes be downloaded without cookies, but Instagram commonly requires an authenticated browser session for reels, private/follower-only posts, stories, age-gated posts, or after rate limits.
+
+To use login cookies:
+
+1. Log in to Instagram in a browser.
+2. Export Instagram cookies in Netscape `cookies.txt` format.
+3. Save them locally as:
+
+```bash
+mkdir -p data/secrets
+$EDITOR data/secrets/instagram-cookies.txt
+chmod 600 data/secrets/instagram-cookies.txt
+```
+
+4. Keep this in `.env`:
+
+```dotenv
+INSTAGRAM_COOKIES_FILE=/app/data/secrets/instagram-cookies.txt
+```
+
+`./data` is git-ignored, so cookies are not committed.
 
 ## Hinweise
 

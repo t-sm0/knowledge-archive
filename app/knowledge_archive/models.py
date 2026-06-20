@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
-ArchiveType = Literal["text", "photo", "document", "video"]
+ArchiveType = Literal["text", "photo", "document", "video", "instagram"]
 
 
 class LLMAnalysis(BaseModel):
@@ -40,4 +40,3 @@ class ArchiveItem(BaseModel):
     original_text: str | None = None
     analysis: LLMAnalysis
     metadata: dict[str, Any] = Field(default_factory=dict)
-
