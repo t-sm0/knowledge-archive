@@ -20,6 +20,15 @@ class Settings(BaseSettings):
         default="minimax/minimax-m3",
         alias="OPENROUTER_VISION_MODEL",
     )
+    openrouter_embedding_model: str = Field(
+        default="google/gemini-embedding-2",
+        alias="OPENROUTER_EMBEDDING_MODEL",
+    )
+    openrouter_embedding_dimensions: int = Field(
+        default=1024,
+        alias="OPENROUTER_EMBEDDING_DIMENSIONS",
+    )
+    embeddings_enabled: bool = Field(default=True, alias="EMBEDDINGS_ENABLED")
     database_url: str = Field(alias="DATABASE_URL")
     data_dir: Path = Field(default=Path("./data"), alias="DATA_DIR")
     public_base_url: str | None = Field(default=None, alias="PUBLIC_BASE_URL")

@@ -10,7 +10,9 @@ dependencies = [
   "pydantic>=2.7,<3",
   "pydantic-settings>=2.2,<3",
   "python-slugify>=8.0,<9",
+  "PyMuPDF>=1.26,<2",
   "PyYAML>=6.0,<7",
+  "trafilatura>=2.0,<3",
   "yt-dlp>=2026.1.1",
 ]
 

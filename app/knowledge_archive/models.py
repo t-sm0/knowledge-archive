@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
-ArchiveType = Literal["text", "photo", "document", "video", "instagram"]
+ArchiveType = Literal["text", "article", "photo", "document", "video", "instagram"]
 
 
 class LLMAnalysis(BaseModel):

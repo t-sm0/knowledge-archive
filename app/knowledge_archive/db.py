@@ -36,7 +36,10 @@ class Database:
                     id, item_type, source, created_at, title, summary, url, tags, assets,
                     model, markdown_path, original_text, metadata, embedding
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13::jsonb, $14)
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12,
+                    $13::jsonb, $14::vector
+                )
                 """,
                 item.id,
                 item.item_type,
@@ -51,14 +54,35 @@ class Database:
                 str(item.markdown_path),
                 item.original_text,
                 json.dumps(metadata, ensure_ascii=False),
-                embedding,
+                vector_literal(embedding),
             )
 
-    async def search_items(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
+    async def search_items(
+        self,
+        query: str,
+        limit: int = 8,
+        query_embedding: list[float] | None = None,
+    ) -> list[dict[str, Any]]:
         if not self.pool:
             raise RuntimeError("Database pool is not connected")
         terms = [term for term in query.split() if len(term) >= 3][:8]
+        results: list[dict[str, Any]] = []
         async with self.pool.acquire() as conn:
+            if query_embedding:
+                vector_rows = await conn.fetch(
+                    """
+                    SELECT id, item_type, created_at, title, summary, url, tags, assets,
+                           markdown_path, original_text, metadata,
+                           embedding <=> $1::vector AS distance
+                    FROM archive_items
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> $1::vector
+                    LIMIT $2
+                    """,
+                    vector_literal(query_embedding),
+                    limit,
+                )
+                results.extend(dict(row) for row in vector_rows)
             if not terms:
                 rows = await conn.fetch(
                     """
@@ -87,4 +111,21 @@ class Database:
                     patterns,
                     limit,
                 )
-        return [dict(row) for row in rows]
+        results.extend(dict(row) for row in rows)
+        deduped: list[dict[str, Any]] = []
+        seen: set[Any] = set()
+        for row in results:
+            row_id = row.get("id")
+            if row_id in seen:
+                continue
+            seen.add(row_id)
+            deduped.append(row)
+            if len(deduped) >= limit:
+                break
+        return deduped
+
+
+def vector_literal(vector: list[float] | None) -> str | None:
+    if vector is None:
+        return None
+    return "[" + ",".join(f"{float(value):.8f}" for value in vector) + "]"

@@ -2,7 +2,7 @@
 
 Docker-Compose-Projekt fuer einen privaten Telegram-Wissensarchiv-Bot.
 
-Der Bot ist ein privater Telegram-Assistent fuer dein Wissensarchiv. Plain-Text-Nachrichten werden als Chat/Fragen gegen die Knowledge Base behandelt. Mit `/archive` sowie durch Fotos, Screenshots, Dokumente, Videos und Instagram-Links werden Inhalte lokal unter `./data` gespeichert, ueber OpenRouter analysiert und als OKF/Markdown plus Metadaten nach Postgres/pgvector geschrieben.
+Der Bot ist ein privater Telegram-Assistent fuer dein Wissensarchiv. Plain-Text-Nachrichten werden als Chat/Fragen gegen die Knowledge Base behandelt. Mit `/archive` sowie durch News-/Artikel-Links, Fotos, Screenshots, Dokumente, Videos und Instagram-Links werden Inhalte lokal unter `./data` gespeichert, ueber OpenRouter analysiert und als OKF/Markdown plus Metadaten nach Postgres/pgvector geschrieben.
 
 ## Features
 
@@ -14,14 +14,15 @@ Der Bot ist ein privater Telegram-Assistent fuer dein Wissensarchiv. Plain-Text-
   - `/ask <frage>` beantwortet Fragen explizit mit Kontext aus archivierten Eintraegen
   - `/chat <nachricht>` ist ein Alias fuer Assistant-Chat
 - Text-Ingest per `/archive` mit URL-Erkennung, LLM-Summary, Markdown und DB-Eintrag
+- News-/Artikel-Link-Ingest mit HTML/Text-Extraktion via `trafilatura`, lokaler Asset-Speicherung, LLM-Summary und DB-Eintrag
 - Foto/Screenshot-Ingest mit groesster Telegram-Foto-Version, lokaler Asset-Speicherung und Vision-Analyse
 - Instagram-Post/Reel-Links mit `yt-dlp`, optionalen Cookies, lokaler Medienablage und Vision-Analyse
-- Dokument-Ingest mit Asset-Speicherung; PDFs werden zunaechst als Asset plus Metadaten archiviert
+- Dokument-Ingest mit Asset-Speicherung; PDFs werden mit `PyMuPDF` textuell extrahiert und analysiert, falls Text vorhanden ist
 - Video-Ingest mit `ffmpeg` Frame-Extraktion alle 3 Sekunden, maximal 20 Frames, plus Vision-Analyse
 - Validierte JSON-Ausgabe per Pydantic
 - OKF/Markdown mit YAML Frontmatter
 - Postgres/pgvector via Docker Compose
-- Embedding-Service als saubere TODO-Grenze fuer spaeteres bge-m3
+- Embeddings via OpenRouter und pgvector fuer semantische Archivsuche
 
 ## Setup
 
@@ -38,6 +39,9 @@ OPENROUTER_API_KEY=...
 OPENROUTER_TEXT_MODEL=deepseek/deepseek-v4-flash
 OPENROUTER_REASONING_MODEL=z-ai/glm-5.2
 OPENROUTER_VISION_MODEL=minimax/minimax-m3
+OPENROUTER_EMBEDDING_MODEL=google/gemini-embedding-2
+OPENROUTER_EMBEDDING_DIMENSIONS=1024
+EMBEDDINGS_ENABLED=true
 INSTAGRAM_COOKIES_FILE=/app/data/secrets/instagram-cookies.txt
 ```
 
@@ -115,7 +119,7 @@ Danach folgen:
 - `vector` Extension
 - Tabelle `archive_items`
 - Indizes fuer Datum, Tags und Assets
-- `embedding vector(1024)` als Platzhalter fuer spaetere bge-m3-Embeddings
+- `embedding vector(1024)` plus IVFFLAT-Cosine-Index fuer semantische Suche
 
 ## OpenRouter models
 
@@ -127,6 +131,13 @@ Current defaults:
   - Higher-cost reasoning model with 1M context. Keep this for later complex document parsing, project-level synthesis, or difficult multi-step extraction.
 - Photos, screenshots and video frames: `minimax/minimax-m3`
   - Current open-weight multimodal model with text, image and video input support, 1M context, and a much lower price than frontier closed multimodal models.
+- Archive retrieval embeddings: `google/gemini-embedding-2`
+  - Current OpenRouter embedding model with flexible output dimensions. The project uses 1024 dimensions to match the pgvector schema.
+
+Open-weight embedding alternative:
+
+- `baai/bge-m3`
+  - Strong multilingual open-weight retrieval model with 1024-dimensional embeddings. Use it when your OpenRouter provider routing allows DeepInfra or Parasail for embeddings.
 
 Optional experimental/free multimodal alternative:
 
@@ -178,7 +189,20 @@ Was habe ich zuletzt zu pgvector gespeichert?
 /chat Erklaere mir kurz, wie ich dieses Archiv nutzen sollte.
 ```
 
-Plain text and `/ask` use a simple lexical database search over title, summary, original text and tags, then ask the configured text model to answer from those matching archive items. Embedding search remains a TODO behind the existing embedding service boundary.
+Plain text and `/ask` use pgvector embedding search first, then merge lexical database matches over title, summary, original text and tags. Answers cite archive context with bracket numbers when matching entries are used.
+
+## News and article links
+
+When a normal text message contains a likely article URL, the bot archives it automatically instead of treating it as chat. It downloads the HTML, extracts readable article text with `trafilatura`, stores both `article.html` and `article.txt` as assets, then sends the extracted article text to the text model for OKF/Markdown generation.
+
+Examples:
+
+```text
+https://apnews.com/article/example-news-story
+/archive https://example.com/article Einordnung spaeter lesen
+```
+
+Non-article URLs inside regular chat are still handled as assistant chat. Use `/archive` if you want to force a plain link/note into the archive.
 
 ## Hinweise
 
@@ -186,6 +210,7 @@ Plain text and `/ask` use a simple lexical database search over title, summary, 
   - `OPENROUTER_TEXT_MODEL`
   - `OPENROUTER_REASONING_MODEL`
   - `OPENROUTER_VISION_MODEL`
-- PDF-Inhalte werden aktuell nicht geparst. Sie werden als Asset gespeichert und mit Metadaten archiviert.
+  - `OPENROUTER_EMBEDDING_MODEL`
+- PDF-Inhalte werden extrahiert, wenn `PyMuPDF` lesbaren Text findet. Gescanntes PDF ohne OCR-Text wird als Asset mit Metadaten archiviert.
 - Videoanalyse basiert auf extrahierten JPG-Frames, nicht auf Tonspur-Transkription.
 - Bei Fehlern schreibt der Bot Details ins Container-Log und sendet dem erlaubten Telegram-User eine kurze Fehlermeldung.

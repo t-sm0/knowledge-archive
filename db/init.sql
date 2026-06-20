@@ -20,4 +20,7 @@ CREATE TABLE IF NOT EXISTS archive_items (
 CREATE INDEX IF NOT EXISTS archive_items_created_at_idx ON archive_items (created_at DESC);
 CREATE INDEX IF NOT EXISTS archive_items_tags_idx ON archive_items USING GIN (tags);
 CREATE INDEX IF NOT EXISTS archive_items_assets_idx ON archive_items USING GIN (assets);
-
+CREATE INDEX IF NOT EXISTS archive_items_embedding_idx
+    ON archive_items USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100)
+    WHERE embedding IS NOT NULL;

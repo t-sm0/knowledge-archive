@@ -15,8 +15,10 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.types import Message
 
+from knowledge_archive.articles import ArticleExtractionError, article_urls, fetch_article
 from knowledge_archive.config import settings
 from knowledge_archive.db import Database
+from knowledge_archive.documents import extract_pdf_text
 from knowledge_archive.embeddings import EmbeddingService
 from knowledge_archive.llm import OpenRouterClient
 from knowledge_archive.models import ArchiveItem, Asset
@@ -35,7 +37,7 @@ router = Router()
 storage = Storage(settings.data_dir)
 db = Database(settings.database_url)
 llm = OpenRouterClient(settings)
-embeddings = EmbeddingService()
+embeddings = EmbeddingService(settings)
 MAX_TELEGRAM_MESSAGE = 3900
 
 
@@ -78,7 +80,7 @@ async def handle_help(message: Message) -> None:
         "/ask <question> - explicit archive Q&A\n"
         "/chat <message> - assistant chat alias\n\n"
         "Plain text chats with the assistant using the archive as context. "
-        "Photos, documents, videos and Instagram links are archived automatically."
+        "News/article links, photos, documents, videos and Instagram links are archived automatically."
     )
 
 
@@ -99,9 +101,7 @@ async def handle_ask(message: Message) -> None:
     if not question:
         await message.answer("Usage: /ask <question>")
         return
-    items = await db.search_items(question, limit=8)
-    answer = await llm.answer_archive_question(question, items)
-    await message.answer(truncate_telegram(answer))
+    await answer_with_archive_context(message, question)
 
 
 @router.message(Command("chat"))
@@ -124,12 +124,27 @@ async def handle_text(message: Message) -> None:
     if instagram:
         await handle_instagram_text(message, text, urls, instagram)
         return
+    articles = article_urls(urls)
+    if articles:
+        try:
+            await archive_article_message(message, text, urls, articles[0])
+            return
+        except ArticleExtractionError:
+            logger.info("Article extraction failed; falling back to archive chat", exc_info=True)
 
     await answer_with_archive_context(message, text)
 
 
 async def archive_text_message(message: Message, text: str) -> None:
     urls = extract_urls(text)
+    articles = article_urls(urls)
+    if articles:
+        try:
+            await archive_article_message(message, text, urls, articles[0])
+            return
+        except ArticleExtractionError:
+            logger.info("Article extraction failed; archiving raw text instead", exc_info=True)
+
     model = select_text_model(text)
     analysis = await llm.analyze_text(text, urls, model=model)
     await persist_and_confirm(
@@ -145,8 +160,63 @@ async def archive_text_message(message: Message, text: str) -> None:
     )
 
 
+async def archive_article_message(
+    message: Message,
+    text: str,
+    urls: list[str],
+    article_url: str,
+) -> None:
+    archive_id = uuid4()
+    article_dir = storage.tmp_dir / "articles" / str(archive_id)
+    article = await fetch_article(article_url, article_dir)
+    html_asset = storage.copy_asset(
+        article.html_path,
+        archive_id,
+        "article.html",
+        "text/html",
+        role="article_html",
+    )
+    text_asset = storage.copy_asset(
+        article.text_path,
+        archive_id,
+        "article.txt",
+        "text/plain",
+        role="article_text",
+    )
+    source_text = (
+        f"Telegram note:\n{text}\n\n"
+        f"URL: {article.url}\n"
+        f"Title: {article.title or '-'}\n"
+        f"Author: {article.author or '-'}\n"
+        f"Date: {article.date or '-'}\n\n"
+        f"Article text:\n{article.text[:60000]}"
+    )
+    model = select_text_model(source_text)
+    analysis = await llm.analyze_text(source_text, urls, model=model)
+    await persist_and_confirm(
+        message=message,
+        item_type="article",
+        source="telegram/article",
+        model=model,
+        analysis=analysis,
+        original_text=article.text,
+        url=article.url,
+        assets=[html_asset, text_asset],
+        metadata={
+            "urls": urls,
+            "article_title": article.title,
+            "article_author": article.author,
+            "article_date": article.date,
+            "telegram_message_id": message.message_id,
+        },
+        archive_id=archive_id,
+    )
+
+
 async def answer_with_archive_context(message: Message, question: str) -> None:
-    items = await db.search_items(question, limit=8)
+    query_vectors = await embeddings.embed([question])
+    query_embedding = query_vectors[0] if query_vectors else None
+    items = await db.search_items(question, limit=8, query_embedding=query_embedding)
     answer = await llm.answer_archive_question(question, items)
     await message.answer(truncate_telegram(answer))
 
@@ -281,7 +351,20 @@ async def handle_document(message: Message) -> None:
     await download_telegram_file(message.bot, document.file_id, temp_path)
     asset = storage.copy_asset(temp_path, archive_id, filename, media_type)
 
-    if media_type and media_type.startswith("image/"):
+    extracted_text: str | None = None
+    if media_type == "application/pdf":
+        extracted_text = extract_pdf_text(settings.data_dir / asset.path)
+        if extracted_text:
+            analysis = await llm.analyze_text(
+                f"PDF filename: {filename}\nCaption: {message.caption or ''}\n\n{extracted_text}",
+                [],
+                model=select_text_model(extracted_text),
+            )
+            model = select_text_model(extracted_text)
+        else:
+            analysis = await llm.analyze_document_metadata(filename, media_type, message.caption)
+            model = settings.openrouter_text_model
+    elif media_type and media_type.startswith("image/"):
         analysis = await llm.analyze_images(
             [settings.data_dir / asset.path],
             "Analyze this image document for OCR, description, summary, facts and tags.",
@@ -305,9 +388,16 @@ async def handle_document(message: Message) -> None:
             "filename": filename,
             "media_type": media_type,
             "file_size": document.file_size,
-            "parser_status": "asset_only" if media_type == "application/pdf" else "metadata_only",
+            "parser_status": (
+                "text_extracted"
+                if extracted_text
+                else "asset_only"
+                if media_type == "application/pdf"
+                else "metadata_only"
+            ),
         },
         archive_id=archive_id,
+        extracted_override=extracted_text,
     )
 
 
@@ -383,6 +473,7 @@ async def persist_and_confirm(
     metadata: dict[str, Any],
     url: str | None = None,
     archive_id: Any | None = None,
+    extracted_override: str | None = None,
 ) -> None:
     item_id = archive_id or uuid4()
     item = ArchiveItem(
@@ -396,14 +487,20 @@ async def persist_and_confirm(
         assets=assets,
         model=model,
         markdown_path=Path(""),
-        original_text=original_text,
+        original_text=extracted_override or original_text,
         analysis=analysis,
         metadata=metadata,
     )
     markdown_path = storage.write_markdown(item)
     item.markdown_path = Path(storage.relative(markdown_path))
 
-    embedding_text = f"{item.title}\n\n{item.analysis.summary}\n\n{item.original_text or ''}"
+    embedding_text = (
+        f"{item.title}\n\n"
+        f"{item.analysis.summary}\n\n"
+        f"{item.analysis.why_interesting}\n\n"
+        f"{' '.join(item.analysis.facts)}\n\n"
+        f"{item.original_text or ''}"
+    )
     vectors = await embeddings.embed([embedding_text])
     await db.insert_item(item, embedding=vectors[0] if vectors else None)
 
@@ -467,6 +564,7 @@ async def main() -> None:
     finally:
         await bot.session.close()
         await llm.close()
+        await embeddings.close()
         await db.close()
 
 

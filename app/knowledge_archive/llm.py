@@ -117,7 +117,8 @@ class OpenRouterClient:
         prompt = (
             "Answer the user's question using the archive context below. "
             "If the archive does not contain enough evidence, say that clearly. "
-            "Use German unless the user writes in another language. Keep it concise.\n\n"
+            "Use German unless the user writes in another language. Keep it concise. "
+            "Cite sources using the bracket numbers like [1], [2] when you use archive context.\n\n"
             f"Archive context:\n{context}\n\n"
             f"Question:\n{question}"
         )
@@ -292,10 +293,21 @@ def _format_archive_context(items: list[dict[str, Any]]) -> str:
                     f"Type: {item.get('item_type')}",
                     f"Created: {item.get('created_at')}",
                     f"URL: {item.get('url') or '-'}",
+                    f"Markdown: {item.get('markdown_path') or '-'}",
                     f"Tags: {', '.join(item.get('tags') or []) or '-'}",
                     f"Summary: {item.get('summary') or '-'}",
+                    f"Facts: {_format_metadata_facts(item.get('metadata'))}",
                     f"Original: {str(item.get('original_text') or '')[:1200] or '-'}",
                 ]
             )
         )
     return "\n\n".join(chunks)[:16000]
+
+
+def _format_metadata_facts(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return "-"
+    facts = metadata.get("facts")
+    if not isinstance(facts, list) or not facts:
+        return "-"
+    return "; ".join(str(fact) for fact in facts[:8])
